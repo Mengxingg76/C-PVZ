@@ -5,17 +5,30 @@
 	3.实现游戏背景
 	4.实现游戏顶部工具栏
 	5.实现工具栏植物卡显示
+	6.实现随机阳光生成
+	7.实现阳光收集与计数
 */
+#include <vector>
+#include <fstream>
 
+// 提供多线程输入输出库
+#include <iostream>
+#include <thread>
+
+#include <Windows.h>
 #include <stdio.h>
 #include <graphics.h>
 #include <time.h>
 #include "tools.h" 
-
+#include <mmsystem.h> // 为实现播放音乐导入的库 处理多媒体文件
+#pragma comment(lib, "winmm.lib") // Windows 多媒体相关的静态链接库
 
 #define WIN_WIDTH  900
 #define WIN_HEIGHT 600
 //#define PLANT_COUNT 4
+
+// 用于存储音频数据的向量 已废弃
+//std::vector<char> audioData;
 
 // 枚举
 enum {Pea,Sunflower,PlantCount};
@@ -29,7 +42,7 @@ IMAGE* imgPlant[PlantCount][20];
 int curX, curY; // 当前选中的植物，在移动过程的位置
 int curPlant; // 0：没有选中 1：选择第一种植物
 
-// 定义结构体
+// 植物结构体
 struct plant {
 	int type; // 0：表示没有植物 1：表示选择第一种植物
 	int frameIndex; // 植物动画序列帧数序号
@@ -37,6 +50,7 @@ struct plant {
 
 struct plant map[3][9];
 
+// 阳光结构体
 struct sunshineBall {
 	int x, y; // 阳光坐标 x不变 y变
 	int frameIndex; // 阳光动画序列帧数序号
@@ -48,6 +62,19 @@ struct sunshineBall {
 // 后端开发 内存池
 struct sunshineBall balls[10];
 IMAGE imgSunshineBall[29];
+
+// 初始阳光
+int sunshine;
+
+// 僵尸结构体
+struct zombie{
+	int x, y;
+	int frameIndex;
+	bool used;
+	int speed;
+};
+struct zombie zombies[10];
+IMAGE imgZombie[22];
 
 bool fileExist(const char* name) {
 	// 属性关闭sdl检测
@@ -74,23 +101,25 @@ void gameInit()
 	loadimage(&imgBar, "res/bar5.png");
 
 	// memset() 函数将指定的值 c 复制到 str 所指向的内存区域的前 n 个字节中，这可以用于将内存块清零或设置为特定值。在一些情况下，需要快速初始化大块内存为零或者特定值，memset() 可以提供高效的实现。
+	// 初始化
 	memset(imgPlant,0,sizeof(imgPlant));
 	memset(map, 0, sizeof(map));
 	memset(balls,0,sizeof(balls));
+	memset(zombies, 0, sizeof(zombies));
 
 	// 初始化植物卡牌
-	char PlantName[64];
+	char name[64];
 	for (int i = 0; i < PlantCount; i++) {
 		// 生成植物卡牌的文件名
-		sprintf_s(PlantName, sizeof(PlantName), "res/Cards/card_%d.png", i + 1);
-		loadimage(&imgPlantCards[i],PlantName);
+		sprintf_s(name, sizeof(name), "res/Cards/card_%d.png", i + 1);
+		loadimage(&imgPlantCards[i],name);
 
 		for (int j = 0; j < 20;j++) {
-			sprintf_s(PlantName, sizeof(PlantName), "res/plant/%d/%d.png", i,j + 1);
+			sprintf_s(name, sizeof(name), "res/plant/%d/%d.png", i,j + 1);
 			// 判断文件是否存在
-			if (fileExist(PlantName)) {
+			if (fileExist(name)) {
 				imgPlant[i][j] = new IMAGE;
-				loadimage(imgPlant[i][j], PlantName);
+				loadimage(imgPlant[i][j], name);
 			}
 			else {
 				break;
@@ -99,11 +128,18 @@ void gameInit()
 	}
 
 	curPlant = 0;
+	sunshine = 100; // 初始阳光
 
 	// 初始化阳光
 	for (int i = 0; i < 29; i++) {
-		sprintf_s(PlantName, sizeof(PlantName), "res/sunshine/%d.png", i + 1);
-		loadimage(&imgSunshineBall[i], PlantName);
+		sprintf_s(name, sizeof(name), "res/sunshine/%d.png", i + 1);
+		loadimage(&imgSunshineBall[i], name);
+	}
+
+	// 初始化僵尸数据
+	for (int i = 0; i < 22; i++) {
+		sprintf_s(name, sizeof(name), "res/zm/%d.png",i + 1);
+		loadimage(&imgZombie[i], name);
 	}
 
 	// 配置随机种子
@@ -111,8 +147,21 @@ void gameInit()
 	
 	// 创建游戏窗口 initgraph(窗口宽度,窗口高度,控制台)
 	initgraph(WIN_WIDTH,WIN_HEIGHT,1);
-}
 
+	// 设置字体
+	LOGFONT f;
+	gettextstyle(&f);
+	f.lfHeight = 28;
+	f.lfWeight = 12;
+	// 设置字体 具体函数操作
+	strcpy(f.lfFaceName, "Segoe UI Black");
+	// 字体抗锯齿
+	f.lfQuality = ANTIALIASED_QUALITY;
+	settextstyle(&f);
+	// 设置字体背景透明
+	setbkmode(TRANSPARENT);
+	setcolor(BLACK);
+}
 
 // 游戏数据更新
 void updateWindow() {
@@ -161,7 +210,56 @@ void updateWindow() {
 		}
 	}
 	
+	// 显示阳光数
+	char sunshineScoreText[8];
+	sprintf_s(sunshineScoreText, sizeof(sunshineScoreText), "%d", sunshine);
+	// 输出阳光数字文本
+	outtextxy(179,67,sunshineScoreText);
+
+	// 渲染僵尸
+	int zombieMax = sizeof(zombies) / sizeof(zombies[0]);
+	for (int i = 0; i < zombieMax; i++) {
+		if (zombies[i].used) {
+			IMAGE* img = &imgZombie[zombies[i].frameIndex];
+			putimagePNG(zombies[i].x, zombies[i].y - img->getheight(), img);
+		}
+	}
+
 	EndBatchDraw();// 结束缓存
+}
+
+
+
+// 播放音频
+void playAudioAsync() {
+	mciSendString("play res/sunshine.mp3", 0, 0, 0);
+}
+
+// 收集阳光
+void collectSunshine(ExMessage* msg) {
+	int count = sizeof(balls) / sizeof(balls[0]);
+	int w = imgSunshineBall[0].getwidth();
+	int h = imgSunshineBall[0].getheight();
+	for (int i = 0; i < count; i++){
+		if (balls[i].used) {
+			int x = balls[i].x;
+			int y = balls[i].y;
+			//msg->x 是一种访问结构体指针成员的方式。在这种用法中，msg 是一个指向结构体的指针，而 x 是该结构体中的一个成员变量。
+			if (msg->x > x && msg->x < x + w && msg->y > y && msg->y < y + h) {
+				balls[i].used = false;
+				sunshine += 25;
+				// mciSendString("play 音频文件地址 volume(系统音量)",返回值，回调参数，用户参数（自定义数据）)
+				// volume to 0~1000 0最小 1000最大
+			    // mciSendString("status res/sunshine.mp3 volume", volumeBuffer, sizeof(volumeBuffer), 0);
+				//mciSendString("play res/sunshine.mp3",0,0,0);
+				// 异步播放音频
+				std::thread audioThread(playAudioAsync);
+				audioThread.detach(); // 分离线程，使其在后台运行
+			}
+			
+		}
+	}
+	
 }
 
 
@@ -180,6 +278,10 @@ void userClick() {
 				//printf("%d\n",index);
 				status = 1;
 				curPlant = index + 1;
+			}
+			else {
+				// 判断是否点击到阳光
+				collectSunshine(&msg);
 			}
 		}
 		else if (msg.message == WM_MOUSEMOVE && status == 1) // 鼠标拖动
@@ -256,6 +358,66 @@ void updateSunshine() {
 	}
 }
 
+// 创建僵尸
+void createZombie() {
+	// 僵尸频率 和 僵尸计数
+	static int zombieFre = 200;
+	static int zombieCount = 0;
+	zombieCount++;
+	if (zombieCount > zombieFre) {
+		zombieCount = 0;
+		zombieFre = rand() % 200 + 300;
+
+		int i;
+		int zombieMax = sizeof(zombies) / sizeof(zombies[0]);
+		for (i = 0; i < zombieMax && zombies[i].used; i++);
+			if (i < zombieMax) {
+				zombies[i].used = true;
+				zombies[i].x = WIN_WIDTH;
+				zombies[i].y = 100 * (1 + rand() % 3) + 172;
+				zombies[i].speed = 1;
+			}
+
+
+	}
+}
+
+// 更新僵尸动画状态
+void updateZombie() {
+	int zombieMax = sizeof(zombies) / sizeof(zombies[0]);
+	static int count = 0;
+	count++;
+	// 计数 速度变慢 调用三次 更新一次
+	if (count > 2) {
+		count = 0;
+
+		// 更新僵尸的xy位置
+		for (int i = 0; i < zombieMax; i++) {
+			if (zombies[i].used) {
+				// 僵尸x坐标 减去 僵尸移动速度
+				zombies[i].x -= zombies[i].speed;
+				if (zombies[i].x < 170) {
+					printf("GAME OVER\n");
+					MessageBox(NULL, "over", "over", 0); // 游戏失败结束
+					exit(0);
+				}
+			}
+		}
+	}
+	static int speedCount = 0;
+	speedCount++;
+	// 放慢僵尸帧动画速度
+	if (speedCount > 3){
+		speedCount = 0;
+		for (int i = 0; i < zombieMax; i++) {
+			if (zombies[i].used) {
+				zombies[i].frameIndex = (zombies[i].frameIndex + 1) % 22;
+			}
+		}
+	}
+	
+}
+
 // 游戏数据更新
 void updateGame() {
 	for (int i = 0; i < 3; i++) {
@@ -274,7 +436,9 @@ void updateGame() {
 	}
 
 	createSunshine(); // 创建阳光函数
-	updateSunshine();// 更新阳光动画状态
+	updateSunshine(); // 更新阳光动画状态
+	createZombie(); // 创建僵尸	
+	updateZombie(); // 更新僵尸动画状态
 }
 
 // 菜单主页面
@@ -336,7 +500,6 @@ int main() {
 			flag = false;
 		}
 		
-		//Sleep(10);
 	}
 
 	
