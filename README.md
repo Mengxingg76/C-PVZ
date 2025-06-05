@@ -17,7 +17,6 @@
 # 编译运行：
 
 ```
-bash
 gcc main.c -o pvz -lgraphics64 -luuid -lmsimg32 -lgdi32 -limm32 -lole32 -loleaut32
 ./pvz
 ```
